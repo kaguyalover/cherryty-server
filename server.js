@@ -2,12 +2,37 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
 const DATA_FILE = path.join(__dirname, 'data', 'rating.json');
+
+// АВТО-ПИНГ ДЛЯ ПОДДЕРЖАНИЯ АКТИВНОСТИ
+function pingServer() {
+  const appUrl = process.env.RENDER_EXTERNAL_URL || 'https://your-app.onrender.com';
+  
+  if (!appUrl.includes('render.com')) {
+    console.log('ℹ️  Авто-пинг отключен (не Render.com)');
+    return;
+  }
+  
+  https.get(appUrl, (res) => {
+    console.log(`✅ Авто-пинг успешен: ${res.statusCode} - ${new Date().toLocaleTimeString()}`);
+  }).on('error', (err) => {
+    console.log(`❌ Ошибка авто-пинга: ${err.message}`);
+  });
+}
+
+// Пинг каждые 3 минуты (180 секунд)
+setInterval(pingServer, 3 * 60 * 1000);
+// Первый пинг через 30 секунд после запуска
+setTimeout(pingServer, 30000);
+
+console.log('🔄 Авто-пинг активирован: каждые 3 минуты');
 
 // Создаем папку data если нет
 if (!fs.existsSync(path.dirname(DATA_FILE))) {
@@ -191,7 +216,7 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'Cherryty Rating Server is running!',
     players: globalRating.length,
-    version: '2.0',
+    version: '2.1',
     lastUpdate: new Date().toISOString(),
     topPlayers: topPlayers.map(p => ({
       name: p.playerNickname,
@@ -202,7 +227,8 @@ app.get('/', (req, res) => {
       file: DATA_FILE,
       exists: fs.existsSync(DATA_FILE),
       size: fs.existsSync(DATA_FILE) ? fs.statSync(DATA_FILE).size : 0
-    }
+    },
+    autoPing: 'active every 3 minutes'
   });
 });
 
@@ -219,10 +245,21 @@ app.get('/api/debug', (req, res) => {
   });
 });
 
+// Специальный эндпоинт для пинга
+app.get('/api/ping', (req, res) => {
+  res.json({ 
+    status: 'pong', 
+    timestamp: new Date().toISOString(),
+    players: globalRating.length,
+    memory: process.memoryUsage()
+  });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🎯 Cherryty rating server v2.0 running on port ${PORT}`);
+  console.log(`🎯 Cherryty rating server v2.1 running on port ${PORT}`);
   console.log(`💾 Хранилище: ${DATA_FILE}`);
   console.log(`🛡️  Авто-сохранение: каждые 30 секунд`);
+  console.log(`🔁 Авто-пинг: каждые 3 минуты`);
   console.log(`📊 Загружено игроков: ${globalRating.length}`);
 });
