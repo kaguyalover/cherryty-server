@@ -8,6 +8,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// === ОБСЛУЖИВАНИЕ СТАТИЧЕСКИХ ФАЙЛОВ ===
+app.use(express.static('.'));
+
 // ФАЙЛЫ ДАННЫХ
 const RATING_FILE = path.join(__dirname, 'data', 'rating.json');
 const PROGRESS_FILE = path.join(__dirname, 'data', 'progress.json');
@@ -135,9 +138,18 @@ app.post('/api/update-rating', (req, res) => {
         const existingIndex = globalRating.findIndex(p => p.userId === playerData.userId);
         
         if (existingIndex !== -1) {
-            globalRating[existingIndex] = playerData;
+            // Обновляем существующего игрока
+            globalRating[existingIndex] = {
+                ...globalRating[existingIndex],
+                ...playerData,
+                lastUpdated: new Date().toISOString()
+            };
         } else {
-            globalRating.push(playerData);
+            // Добавляем нового игрока
+            globalRating.push({
+                ...playerData,
+                lastUpdated: new Date().toISOString()
+            });
         }
         
         // СОХРАНЕНИЕ В ФОНЕ
@@ -209,9 +221,32 @@ app.post('/api/save-progress', (req, res) => {
             lastUpdated: new Date().toISOString()
         });
 
+        // Автоматически обновляем рейтинг при сохранении прогресса
+        const ratingIndex = globalRating.findIndex(p => p.userId === userId);
+        if (ratingIndex !== -1) {
+            globalRating[ratingIndex] = {
+                ...globalRating[ratingIndex],
+                level: cleanGameState.level,
+                experience: cleanGameState.experience,
+                totalEarned: cleanGameState.totalEarned,
+                lastUpdated: new Date().toISOString()
+            };
+        } else {
+            // Если игрока нет в рейтинге, но есть прогресс - добавляем
+            globalRating.push({
+                userId: userId,
+                playerNickname: gameState.playerNickname || 'Unknown',
+                level: cleanGameState.level,
+                experience: cleanGameState.experience,
+                totalEarned: cleanGameState.totalEarned,
+                lastUpdated: new Date().toISOString()
+            });
+        }
+
         // Фоновое сохранение на диск
         setTimeout(() => {
             saveProgressData(playerProgress);
+            saveRatingData(globalRating);
         }, 0);
 
         res.json({ success: true, message: 'Progress saved' });
@@ -250,7 +285,7 @@ app.get('/api/load-progress', (req, res) => {
 // === АДМИН ENDPOINTS ===
 
 // КОНФИГУРАЦИЯ АДМИНКИ (ТОЛЬКО ПАРОЛЬ)
-const ADMIN_PASSWORD = "chE79911001#"; // ЗАМЕНИТЕ на свой пароль!
+const ADMIN_PASSWORD = "cherryty_admin_2024"; // ЗАМЕНИТЕ на свой пароль!
 
 // Хранилище сессий админа
 const adminSessions = new Map();
@@ -401,7 +436,7 @@ app.post('/api/admin/update-stats', (req, res) => {
         
         progressData.lastUpdated = new Date().toISOString();
         
-        // Обновляем рейтинг
+        // ОБНОВЛЯЕМ РЕЙТИНГ С УЧЕТОМ ИЗМЕНЕНИЙ
         const ratingIndex = globalRating.findIndex(p => p.userId === userId);
         if (ratingIndex !== -1) {
             if (validatedUpdates.level !== undefined) {
@@ -410,7 +445,27 @@ app.post('/api/admin/update-stats', (req, res) => {
             if (validatedUpdates.experience !== undefined) {
                 globalRating[ratingIndex].experience = validatedUpdates.experience;
             }
+            // Если меняем уровень или опыт, обновляем totalEarned для консистентности
+            if (validatedUpdates.level !== undefined || validatedUpdates.experience !== undefined) {
+                globalRating[ratingIndex].totalEarned = Math.max(
+                    globalRating[ratingIndex].totalEarned || 0,
+                    validatedUpdates.experience || globalRating[ratingIndex].experience
+                );
+            }
             globalRating[ratingIndex].lastUpdated = new Date().toISOString();
+        } else {
+            // Если игрока нет в рейтинге, но мы его обновляем - добавляем
+            globalRating.push({
+                userId: userId,
+                playerNickname: progressData.gameState.playerNickname || 'Unknown',
+                level: validatedUpdates.level || progressData.gameState.level,
+                experience: validatedUpdates.experience || progressData.gameState.experience,
+                totalEarned: Math.max(
+                    progressData.gameState.totalEarned || 0,
+                    validatedUpdates.experience || progressData.gameState.experience
+                ),
+                lastUpdated: new Date().toISOString()
+            });
         }
         
         // Сохраняем изменения
@@ -431,6 +486,37 @@ app.post('/api/admin/update-stats', (req, res) => {
     }
 });
 
+// Получение полной информации об игроке (для админки)
+app.post('/api/admin/get-user-full', (req, res) => {
+    try {
+        const { sessionToken, userId } = req.body;
+        
+        if (!verifyAdminSession(sessionToken)) {
+            return res.status(401).json({ error: 'Сессия истекла' });
+        }
+        
+        const progressData = playerProgress.get(userId);
+        const ratingData = globalRating.find(p => p.userId === userId);
+        
+        if (!progressData && !ratingData) {
+            return res.json({ success: false, error: 'Игрок не найден' });
+        }
+        
+        res.json({
+            success: true,
+            player: {
+                userId: userId,
+                progress: progressData ? progressData.gameState : null,
+                rating: ratingData || null
+            }
+        });
+        
+    } catch (error) {
+        console.log('❌ Ошибка получения данных игрока:', error);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
 // Выход из админки
 app.post('/api/admin/logout', (req, res) => {
     const { sessionToken } = req.body;
@@ -443,6 +529,11 @@ app.post('/api/admin/logout', (req, res) => {
     res.json({ success: true });
 });
 
+// === ENDPOINT ДЛЯ АДМИНКИ ===
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(__dirname, 'admin.html'));
+});
+
 // Статус сервера
 app.get('/', (req, res) => {
     res.json({ 
@@ -451,7 +542,8 @@ app.get('/', (req, res) => {
         progressPlayers: playerProgress.size,
         version: '4.1',
         hosting: 'Railway',
-        features: ['rating', 'progress-sync', 'conflict-resolution', 'admin-panel']
+        features: ['rating', 'progress-sync', 'conflict-resolution', 'admin-panel'],
+        adminPanel: '/admin'
     });
 });
 
@@ -461,5 +553,6 @@ app.listen(PORT, () => {
     console.log(`📊 Рейтинг: ${globalRating.length} игроков`);
     console.log(`🎮 Прогресс: ${playerProgress.size} сохранений`);
     console.log(`🔐 Админ-панель: ДОСТУПНА (пароль: ${ADMIN_PASSWORD})`);
+    console.log(`🌐 Админка доступна по: /admin.html или /admin`);
     console.log(`🔄 Синхронизация: ВКЛЮЧЕНА`);
 });
