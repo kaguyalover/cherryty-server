@@ -14,7 +14,7 @@ const PROGRESS_FILE = path.join(__dirname, 'data', 'progress.json');
 
 // УСКОРЕННАЯ ЗАГРУЗКА ДАННЫХ
 let globalRating = [];
-let playerProgress = new Map(); // Для быстрого доступа по userId
+let playerProgress = new Map();
 
 function loadRatingData() {
     try {
@@ -38,7 +38,6 @@ function loadProgressData() {
             const parsed = JSON.parse(data);
             console.log(`🎮 Загружено прогрессов: ${parsed.length}`);
             
-            // Конвертируем в Map для быстрого поиска
             const progressMap = new Map();
             parsed.forEach(item => {
                 if (item.userId && item.gameState) {
@@ -56,7 +55,6 @@ function loadProgressData() {
 
 function saveRatingData(data) {
     try {
-        // Создаем папку data если её нет
         const dataDir = path.dirname(RATING_FILE);
         if (!fs.existsSync(dataDir)) {
             fs.mkdirSync(dataDir, { recursive: true });
@@ -73,10 +71,8 @@ function saveRatingData(data) {
 
 function saveProgressData(progressMap) {
     try {
-        // Конвертируем Map в массив для сохранения
         const progressArray = Array.from(progressMap.values());
         
-        // Создаем папку data если её нет
         const dataDir = path.dirname(PROGRESS_FILE);
         if (!fs.existsSync(dataDir)) {
             fs.mkdirSync(dataDir, { recursive: true });
@@ -105,7 +101,7 @@ setInterval(() => {
     }
 }, 30 * 1000);
 
-// === СУЩЕСТВУЮЩИЕ ENDPOINTS (БЕЗ ИЗМЕНЕНИЙ) ===
+// === ОБНОВЛЕННЫЕ ENDPOINTS С СИНХРОНИЗАЦИЕЙ ===
 
 // УСКОРЕННЫЙ ПОЛУЧЕНИЕ РЕЙТИНГА
 app.get('/api/rating', (req, res) => {
@@ -144,12 +140,11 @@ app.post('/api/update-rating', (req, res) => {
             globalRating.push(playerData);
         }
         
-        // СОХРАНЕНИЕ В ФОНЕ - НЕ ЖДЕМ ОТВЕТА
+        // СОХРАНЕНИЕ В ФОНЕ
         setTimeout(() => {
             saveRatingData(globalRating);
         }, 0);
         
-        // МГНОВЕННЫЙ ОТВЕТ КЛИЕНТУ
         const sorted = globalRating
             .sort((a, b) => {
                 if (b.level !== a.level) return b.level - a.level;
@@ -165,9 +160,7 @@ app.post('/api/update-rating', (req, res) => {
     }
 });
 
-// === НОВЫЕ ENDPOINTS ДЛЯ ПРОГРЕССА ===
-
-// СОХРАНЕНИЕ ПРОГРЕССА ИГРЫ
+// === УЛУЧШЕННОЕ СОХРАНЕНИЕ ПРОГРЕССА С КОНТРОЛЕМ ВЕРСИЙ ===
 app.post('/api/save-progress', (req, res) => {
     try {
         const { userId, gameState } = req.body;
@@ -176,9 +169,26 @@ app.post('/api/save-progress', (req, res) => {
             return res.status(400).json({ error: 'Missing required fields' });
         }
 
-        console.log(`💾 Сохранение прогресса: ${userId}`);
+        const existingProgress = playerProgress.get(userId);
+        const newTimestamp = gameState.lastUpdated || Date.now();
+        
+        // КОНТРОЛЬ КОНФЛИКТОВ: если на сервере новее данные - отвергаем
+        if (existingProgress && existingProgress.gameState.lastUpdated) {
+            const existingTimestamp = existingProgress.gameState.lastUpdated;
+            
+            if (newTimestamp < existingTimestamp) {
+                console.log(`⚠️ Конфликт версий: клиент ${newTimestamp}, сервер ${existingTimestamp}`);
+                return res.json({ 
+                    success: false, 
+                    conflict: true,
+                    serverVersion: existingProgress.gameState 
+                });
+            }
+        }
 
-        // Валидация и очистка данных
+        console.log(`💾 Сохранение прогресса: ${userId} (${newTimestamp})`);
+
+        // Валидация данных
         const cleanGameState = {
             money: Math.max(0, Number(gameState.money) || 0),
             unlockedBeds: Math.max(6, Math.min(64, Number(gameState.unlockedBeds) || 6)),
@@ -188,7 +198,8 @@ app.post('/api/save-progress', (req, res) => {
             farmMap: Array.isArray(gameState.farmMap) ? gameState.farmMap : [],
             totalEarned: Math.max(0, Number(gameState.totalEarned) || 0),
             level: Math.max(1, Number(gameState.level) || 1),
-            experience: Math.max(0, Number(gameState.experience) || 0)
+            experience: Math.max(0, Number(gameState.experience) || 0),
+            lastUpdated: newTimestamp
         };
 
         // Сохраняем в память
@@ -227,7 +238,7 @@ app.get('/api/load-progress', (req, res) => {
         if (progress && progress.gameState) {
             res.json(progress.gameState);
         } else {
-            res.json(null); // Нет сохранения
+            res.json(null);
         }
         
     } catch (error) {
@@ -239,19 +250,19 @@ app.get('/api/load-progress', (req, res) => {
 // Статус сервера
 app.get('/', (req, res) => {
     res.json({ 
-        status: 'Cherryty Game Server on Railway!',
+        status: 'Cherryty Game Server v4.1 (синхронизация)',
         ratingPlayers: globalRating.length,
         progressPlayers: playerProgress.size,
-        version: '4.0',
+        version: '4.1',
         hosting: 'Railway',
-        features: ['rating', 'progress-save']
+        features: ['rating', 'progress-sync', 'conflict-resolution']
     });
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`🚀 Cherryty Game Server v4.0 running on Railway (port ${PORT})`);
+    console.log(`🚀 Cherryty Game Server v4.1 запущен на Railway (port ${PORT})`);
     console.log(`📊 Рейтинг: ${globalRating.length} игроков`);
     console.log(`🎮 Прогресс: ${playerProgress.size} сохранений`);
-    console.log(`💾 Файлы: rating.json, progress.json`);
+    console.log(`🔄 Синхронизация: ВКЛЮЧЕНА`);
 });
